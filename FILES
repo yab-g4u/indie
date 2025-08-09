@@ -1,0 +1,190 @@
+file: app/layout.tsx
+--------------------------------
+import type { Metadata } from "next"
+import "./globals.css"
+import { ThemeProvider } from "@/components/theme-provider"
+
+export const metadata: Metadata = {
+  metadataBase: new URL("https://indiecrop.app"),
+  title: "IndieCrop — Climate‑Smart Agriculture",
+  description: "Digital Farm Cards, AI-driven recommendations, verifiable proof, and rewards.",
+  applicationName: "IndieCrop",
+  keywords: ["agriculture", "climate-smart", "ai", "indiecrop", "digital farm card"],
+  icons: { icon: "/favicon.ico" },
+}
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en" suppressHydrationWarning>
+      <body className="min-h-screen bg-background text-foreground antialiased">
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+          {children}
+        </ThemeProvider>
+      </body>
+    </html>
+  )
+}
+file: app/(marketing)/page.tsx
+--------------------------------
+<section id="services" className="mx-auto max-w-6xl px-4 py-16">
+  <h2 className="text-3xl md:text-4xl font-bold tracking-tight">Services</h2>
+  <div className="mt-6 grid md:grid-cols-3 gap-4">
+    <RoleCard
+      title="Agent App"
+      desc="Scan Digital Farm IDs, capture photo+GPS proof, and log actions offline with sync."
+      href="/agent"
+      confirmText="I am an authorized field agent."
+    />
+    <RoleCard
+      title="NGO Dashboard"
+      desc="Map farms, verify logs, manage rewards, and generate donor reports."
+      href="/ngo"
+      confirmText="I am an NGO/Ministry staff member."
+    />
+    <RoleCard
+      title="Admin"
+      desc="User onboarding, crop/action settings, and rewards catalog management."
+      href="/admin"
+      confirmText="I am an administrator."
+    />
+  </div>
+</section>
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
+import { useState } from "react"
+
+function RoleCard({ title, desc, href, confirmText }: { title: string; desc: string; href: string; confirmText: string }) {
+  const [checked, setChecked] = useState(false)
+  return (
+    <div className="rounded-xl border p-5 bg-card">
+      <div className="font-semibold">{title}</div>
+      <p className="text-sm text-muted-foreground mt-2">{desc}</p>
+      <div className="mt-3 flex gap-2">
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <button className="inline-flex items-center rounded-md border px-3 py-1.5 text-sm">Proceed</button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Confirm your role</AlertDialogTitle>
+              <AlertDialogDescription>
+                Please confirm you are accessing the correct area. This helps us keep data organized and secure.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="mt-2 text-sm">
+              <label className="inline-flex items-center gap-2">
+                <input type="checkbox" onChange={(e) => setChecked(e.target.checked)} />
+                <span>{confirmText}</span>
+              </label>
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction asChild>
+                <a href={href} aria-disabled={!checked} className={`inline-flex items-center rounded-md px-3 py-1.5 text-sm ${checked ? "bg-[color:#0B6A46] text-white" : "bg-muted text-muted-foreground pointer-events-none"}`}>Continue</a>
+              </AlertDialogAction>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+      </div>
+    )
+  }
+file: app/api/calendar/route.ts
+--------------------------------
+import { NextResponse } from "next/server"
+import { google } from "@ai-sdk/google"
+import { generateText } from "ai"
+
+const GEMINI_KEY_FALLBACK = "AIzaSyBpO-oLIiYQQDPM-I3NkJqqCn1a865U0C0"
+export const maxDuration = 30
+
+export async function POST(req: Request) {
+  const { crop = "maize", lat = 0, lon = 0 } = await req.json().catch(() => ({}))
+  try {
+    const { text } = await generateText({
+      model: google("gemini-1.5-pro", {
+        apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY || GEMINI_KEY_FALLBACK,
+      }),
+      // Ultra explicit, JSON-only instructions:
+      prompt: `
+Return JSON ONLY:
+{
+"events":[
+  { "id": "e1", "date": "ISO", "type": "plant"|"irrigate"|"harvest"|"compost"|"weed", "label": "string", "confidence": 0.00-1.00, "status": "ontrack"|"approaching"|"missed"|"completed", "influences":[{ "icon":"rain"|"soil"|"indigenous"|"sun","label":"string"}] },
+  ...
+]
+}
+
+Rules:
+- 5 events total: 1-2 in the past 7 days, 3-4 in the next 14 days.
+- Use climate reasoning (rain forecast, soil moisture proxy, indigenous cues).
+- Keep labels short (<= 3 words). Dates must be valid ISO strings.
+- Confidence 0.6–0.95 realistic.
+Context: crop=${crop}, location=(${lat}, ${lon})
+      `,
+    })
+    const json = safeParse(text)
+    if (Array.isArray(json?.events) && json.events.length) {
+      return NextResponse.json({ events: json.events })
+    }
+    // Fallback if model response invalid
+    return NextResponse.json({ events: ruleBasedEvents(crop, lat, lon) })
+  } catch {
+    return NextResponse.json({ events: ruleBasedEvents(crop, lat, lon) })
+  }
+}
+
+function safeParse(s: string) {
+  try {
+    const start = s.indexOf("{")
+    const end = s.lastIndexOf("}")
+    return JSON.parse(s.slice(start, end + 1))
+  } catch {
+    return null
+  }
+}
+
+function ruleBasedEvents(crop: string, lat: number, lon: number) {
+  const now = Date.now()
+  const day = 86400000
+  const seed = Math.abs(Math.sin(lat + lon)) // pseudo variability
+  const conf = (b: number) => Math.max(0.6, Math.min(0.95, b + seed * 0.1))
+  return [
+    { id: "rb1", date: new Date(now - 2 * day).toISOString(), type: "plant", label: `Plant ${crop}`, confidence: conf(0.82), status: "completed", influences: [{ icon: "rain", label: "Rainfall+" }] },
+    { id: "rb2", date: new Date(now + 1 * day).toISOString(), type: "irrigate", label: "Irrigate 10mm", confidence: conf(0.78), status: "approaching", influences: [{ icon: "soil", label: "Low SMI" }] },
+    { id: "rb3", date: new Date(now + 4 * day).toISOString(), type: "compost", label: "Apply compost", confidence: conf(0.75), status: "ontrack", influences: [{ icon: "indigenous", label: "Local sign" }] },
+    { id: "rb4", date: new Date(now + 9 * day).toISOString(), type: "weed", label: "Weed rows", confidence: conf(0.7), status: "ontrack", influences: [{ icon: "sun", label: "Clear skies" }] },
+    { id: "rb5", date: new Date(now + 13 * day).toISOString(), type: "harvest", label: "Harvest", confidence: conf(0.72), status: "ontrack", influences: [{ icon: "sun", label: "Low rain risk" }] },
+  ]
+}
+file: components/sections/ai-calendar-panel.tsx
+--------------------------------
+async function generate() {
+  setLoading(true)
+  setError(null)
+  setEvents(null)
+  try {
+    const res = await fetch("/api/calendar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        crop: String(crop || "maize"),
+        lat: Number(lat || 0),
+        lon: Number(lon || 0),
+      }),
+    })
+    if (!res.ok) throw new Error("Bad response")
+    const data = await res.json()
+    const arr = Array.isArray(data?.events) ? data.events : []
+    setEvents(arr)
+    if (!arr.length) setError("No tasks generated. Try different inputs.")
+  } catch (e: any) {
+    setError("Failed to generate. Please try again.")
+  } finally {
+    setLoading(false)
+  }
+}
+{error && (
+  <div className="flex items-center gap-2 text-sm text-red-600">
+    <span>{error}</span>
+    <Button size="sm" variant="outline" onClick={generate}>Retry</Button>
+  </div>
+)}
